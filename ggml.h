@@ -1530,6 +1530,10 @@ extern "C" {
             float                 xpos_base,
             bool                  xpos_down);
 
+    GGML_CALL struct ggml_tensor * ggml_rope_with_freq_factors(
+            struct ggml_tensor*   rope_tensor,
+            struct ggml_tensor*   freq_factors);
+
     // alibi position embedding
     // in-place, returns view(a)
     GGML_DEPRECATED(GGML_API struct ggml_tensor * ggml_alibi(
