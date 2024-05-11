@@ -3888,6 +3888,20 @@ static struct ggml_tensor * ggml_sub_impl(
     return result;
 }
 
+static struct ggml_tensor * ggml_debug_impl(
+        struct ggml_context * ctx,
+        struct ggml_tensor * a,
+        bool inplace) {
+
+    struct ggml_tensor * result = inplace ? ggml_view_tensor(ctx, a) : ggml_dup_tensor(ctx, a);
+
+    result->op   = 0; // GGML_OP_DEBUG;
+    result->grad = NULL;
+    result->src[0] = a;
+
+    return result;
+}
+
 struct ggml_tensor * ggml_sub(
         struct ggml_context * ctx,
         struct ggml_tensor * a,
@@ -8700,6 +8714,13 @@ static void ggml_compute_forward_acc(
     }
 }
 
+static void ggml_compute_forward_dbg(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    printf("- %s %f\n", src0->name, *((float *)(src0->data)));
+}
+
 // ggml_compute_forward_sub
 
 static void ggml_compute_forward_sub_f32(
@@ -12992,6 +13013,15 @@ static void ggml_compute_forward_rope_f32(
     const bool is_neox = mode & 2;
     const bool is_glm  = mode & 4;
 
+    const float* freq_factors = NULL;
+    if (is_neox) {
+        if (dst->src[2] != NULL) {
+            GGML_ASSERT(dst->src[2]->type == GGML_TYPE_F32);
+            GGML_ASSERT(dst->src[2]->ne[0] >= n_dims / 2);
+            freq_factors = (const float*) dst->src[2]->data;
+        }
+    }
+
     // backward process uses inverse rotation by cos and sin.
     // cos and sin build a rotation matrix, where the inverse is the transpose.
     // this essentially just switches the sign of sin.
@@ -13068,10 +13098,11 @@ static void ggml_compute_forward_rope_f32(
 
                             // simplified from `(ib * n_dims + ic) * inv_ndims`
                             float cur_rot = inv_ndims * ic - ib;
+                            float freq_factor = freq_factors ? freq_factors[ic/2] : 1.0f;
 
                             float cos_theta, sin_theta;
                             rope_yarn(
-                                theta_base, freq_scale, corr_dims, cur_rot, ext_factor, attn_factor,
+                                theta_base/freq_factor, freq_scale, corr_dims, cur_rot, ext_factor, attn_factor,
                                 &cos_theta, &sin_theta
                             );
                             sin_theta *= sin_sign;
@@ -16480,6 +16511,24 @@ static void ggml_compute_forward_cross_entropy_loss_back(
 }
 
 /////////////////////////////////
+int starts_with(const char *str, const char *prefix) {
+    size_t str_len = strlen(str);
+    size_t prefix_len = strlen(prefix);
+
+    // If the prefix is longer than the string, it cannot be a prefix
+    if (str_len < prefix_len) {
+        return 0;
+    }
+
+    // Compare the initial characters of both strings
+    return strncmp(str, prefix, prefix_len) == 0;
+}
+
+static void print_if(struct ggml_tensor * tensor, const char* name, enum ggml_op op) {
+    // if (starts_with(tensor->name, name) && (tensor->op == op || op == 0)) {
+    //     printf("name=%s, data0=%f, op=%s\n", tensor->name, tensor->data ? *((float *)tensor->data) : 0.0f, ggml_op_name(tensor->op));
+    // }
+}
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     GGML_ASSERT(params);
@@ -16509,6 +16558,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_sub(params, tensor);
             } break;
+        // case GGML_OP_DEBUG:
+        //     {
+        //         ggml_compute_forward_dbg(params, tensor);
+        //     } break;
         case GGML_OP_MUL:
             {
                 ggml_compute_forward_mul(params, tensor);
@@ -16828,6 +16881,19 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 GGML_ASSERT(false);
             } break;
     }
+
+    // if (strcmp(tensor->name, "phi3") >= 0) {
+    //     printf("op=%s, src0=%s, data=%f\n", ggml_op_name(tensor->op), tensor->name, tensor->data ? *((float *)tensor->data) : 0.0f);
+    // }
+    print_if(tensor, "phi3-attn_norm", 0);
+    print_if(tensor, "phi3-Qcur", GGML_OP_RESHAPE);
+    print_if(tensor, "phi3-Kcur", GGML_OP_RESHAPE);
+    print_if(tensor, "phi3-Vcur", 0);
+    print_if(tensor, "phi3-Qrope", 0);
+    print_if(tensor, "phi3-Krope", 0);
+    print_if(tensor, "phi3-ffn_norm", 0);
+    print_if(tensor, "phi3-ffn_out", 0);
+    // printf("    [%s %f %s]\n", tensor->name, tensor->data ? *((float *)tensor->data) : 0.0f, ggml_op_name(tensor->op));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -18364,6 +18430,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads, int n_cur_
                 n_tasks = n_threads;
             } break;
         case GGML_OP_SUB:
+        //case GGML_OP_DEBUG:
         case GGML_OP_SQR:
         case GGML_OP_SQRT:
         case GGML_OP_LOG:

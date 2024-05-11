@@ -30,3 +30,28 @@ void ggml_cuda_op_scale(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     scale_f32_cuda(src0_d, dst_d, scale, ggml_nelements(src0), stream);
     CUDA_CHECK(cudaGetLastError());
 }
+
+// ggml_map_custom1
+struct ggml_map_custom1_op_params {
+    ggml_custom1_op_t fun;
+    int n_tasks;
+    void * userdata;
+};
+
+void ggml_cuda_op_map_custom1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    
+    const struct ggml_tensor * a = dst->src[0];
+
+    struct ggml_map_custom1_op_params p;
+    memcpy(&p, dst->op_params, sizeof(p));
+
+    size_t size = a->nb[0] * a->ne[0] * a->ne[1] * a->ne[2] * a->ne[3];
+    char * data = new char[size];
+
+    CUDA_CHECK(cudaMemcpyAsync(data, (const char *)a->data, size, cudaMemcpyDeviceToHost, ctx.stream()));
+
+    p.fun(dst, a, 0, 0, data);
+    delete data;
+
+    CUDA_CHECK(cudaGetLastError());
+}

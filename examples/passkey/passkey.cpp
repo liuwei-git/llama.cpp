@@ -51,8 +51,8 @@ int main(int argc, char ** argv) {
         i_pos = rand() % n_junk;
     }
 
-    const std::string prompt_prefix = "There is an important info hidden inside a lot of irrelevant text. Find it and memorize them. I will quiz you about the important information there.";
-    const std::string prompt_suffix = " What is the pass key? The pass key is";
+    const std::string prompt_prefix = "<|user|>\nThere is an important info hidden inside a lot of irrelevant text. Find it and memorize them. I will quiz you about the important information there.";
+    const std::string prompt_suffix = " What is the pass key? The pass key is<|end|>\n<|assistant|>";
 
     // generate junk text
     params.prompt = prompt_prefix;
@@ -93,7 +93,7 @@ int main(int argc, char ** argv) {
 
     ctx_params.seed    = seed;
     ctx_params.n_ctx   = llama_n_ctx_train(model)*n_grp + n_keep;
-    ctx_params.n_batch = 512;
+    ctx_params.n_batch = ctx_params.n_ctx;
     ctx_params.n_threads       = params.n_threads;
     ctx_params.n_threads_batch = params.n_threads_batch == -1 ? params.n_threads : params.n_threads_batch;
 
@@ -108,7 +108,7 @@ int main(int argc, char ** argv) {
 
     // tokenize the prompt
     std::vector<llama_token> tokens_list;
-    tokens_list = ::llama_tokenize(ctx, params.prompt, true);
+    tokens_list = ::llama_tokenize(ctx, params.prompt, true, true);
 
     // tokenize the prefix and use it as a sink
     const int n_tokens_prefix = ::llama_tokenize(ctx, prompt_prefix, true).size();
@@ -135,7 +135,7 @@ int main(int argc, char ** argv) {
     LOG_TEE("prompt tokens: %d\n", n_tokens_all);
     //LOG_TEE("prompt: %s\n", params.prompt.c_str());
 
-    llama_batch batch = llama_batch_init(512, 0, 1);
+    llama_batch batch = llama_batch_init(ctx_params.n_ctx, 0, 1);
 
     int n_past = 0;
 

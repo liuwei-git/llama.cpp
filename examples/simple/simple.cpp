@@ -1,33 +1,102 @@
 #include "common.h"
 #include "llama.h"
 
+#include <iostream>
+#include <fstream>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+static const char* prompt_template3 = "<|user|>%s<|end|><|assistant|>";
+
+static std::string format_prompt(const char* input)
+{
+    size_t len = strlen(input) + strlen(prompt_template3) - 1;
+
+    std::string text(len, 0);
+    sprintf(&text[0], prompt_template3, input);
+    text.pop_back();
+
+    return text;
+}
+
+static std::string passkey_prompt(int n_junk = 500, int i_pos = 333)
+{
+    const std::string prompt_prefix = "There is an important info hidden inside a lot of irrelevant text. Find it and memorize them. I will quiz you about the important information there.";
+    const std::string prompt_suffix = " What is the pass key? The pass key is";
+
+    // generate junk text
+    auto prompt = prompt_prefix;
+
+    const int passkey = rand() % 50000 + 1;
+
+    for (int i = 0; i < n_junk; i++) {
+        if (i % n_junk == i_pos) {
+            prompt += " The pass key is " + std::to_string(passkey) + ". Remember it. " + std::to_string(passkey) + " is the pass key.";
+        }
+
+        prompt += " The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.";
+    }
+
+    prompt += prompt_suffix;
+    return prompt;
+}
+
+std::vector<int> read_tokens() {
+    // Specify the file path
+    const char* file_path = "/mnt/models/Phi-3-mini-128k-instruct/ids.txt";
+
+    // Open the file
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open the file: " << file_path << std::endl;
+        return {};
+    }
+
+    // Vector to store tokens
+    std::vector<int> tokens;
+
+    // Read tokens from the file, treating each line as a single integer
+    std::string line;
+    while (std::getline(file, line)) {
+        // Convert string to integer using atoi function
+        int num = std::atoi(line.c_str());
+        tokens.push_back(num);
+    }
+
+    // Close the file
+    file.close();
+
+    return tokens;
+}
+
 int main(int argc, char ** argv) {
     gpt_params params;
 
-    if (argc == 1 || argv[1][0] == '-') {
-        printf("usage: %s MODEL_PATH [PROMPT]\n" , argv[0]);
-        return 1 ;
-    }
+    // if (argc == 1 || argv[1][0] == '-') {
+    //     printf("usage: %s MODEL_PATH [PROMPT]\n" , argv[0]);
+    //     return 1 ;
+    // }
 
-    if (argc >= 2) {
-        params.model = argv[1];
-    }
+    // if (argc >= 2) {
+    //     params.model = argv[1];
+    // }
 
-    if (argc >= 3) {
-        params.prompt = argv[2];
-    }
+    // if (argc >= 3) {
+    //     params.prompt = argv[2];
+    // }
 
-    if (params.prompt.empty()) {
-        params.prompt = "Hello my name is";
-    }
+    // if (params.prompt.empty()) {
+    //     params.prompt = passkey_prompt();
+    // }
+
+    params.model = "/mnt/models/phi3_n16.gguf";
+    params.prompt = format_prompt(passkey_prompt(10).c_str());
 
     // total length of the sequence including the prompt
     const int n_len = 32;
+    params.n_threads = 1;
 
     // init LLM
 
@@ -38,7 +107,8 @@ int main(int argc, char ** argv) {
 
     llama_model_params model_params = llama_model_default_params();
 
-    // model_params.n_gpu_layers = 99; // offload all layers to the GPU
+    model_params.n_gpu_layers = 99; // offload all layers to the GPU
+    // model_params.split_mode = LLAMA_SPLIT_MODE_NONE;
 
     llama_model * model = llama_load_model_from_file(params.model.c_str(), model_params);
 
@@ -52,10 +122,14 @@ int main(int argc, char ** argv) {
     llama_context_params ctx_params = llama_context_default_params();
 
     ctx_params.seed  = 1234;
-    ctx_params.n_ctx = 2048;
+    ctx_params.n_ctx = 8192;
+    ctx_params.n_ubatch = 8192;
+    ctx_params.n_batch = 8192;
     ctx_params.n_threads = params.n_threads;
     ctx_params.n_threads_batch = params.n_threads_batch == -1 ? params.n_threads : params.n_threads_batch;
 
+    // ctx_params.offload_kqv = false;
+    
     llama_context * ctx = llama_new_context_with_model(model, ctx_params);
 
     if (ctx == NULL) {
@@ -65,8 +139,9 @@ int main(int argc, char ** argv) {
 
     // tokenize the prompt
 
-    std::vector<llama_token> tokens_list;
-    tokens_list = ::llama_tokenize(ctx, params.prompt, true);
+    std::vector<llama_token> tokens_list = {1, 32010, 2649, 592, 263, 2958, 446, 32007, 32001};
+    // tokens_list = ::llama_tokenize(ctx, params.prompt, true, true);
+    tokens_list = read_tokens();
 
     const int n_ctx    = llama_n_ctx(ctx);
     const int n_kv_req = tokens_list.size() + (n_len - tokens_list.size());
@@ -84,16 +159,16 @@ int main(int argc, char ** argv) {
 
     fprintf(stderr, "\n");
 
-    for (auto id : tokens_list) {
-        fprintf(stderr, "%s", llama_token_to_piece(ctx, id).c_str());
-    }
+    // for (auto id : tokens_list) {
+    //     fprintf(stderr, "%s", llama_token_to_piece(ctx, id).c_str());
+    // }
 
     fflush(stderr);
 
     // create a llama_batch with size 512
     // we use this object to submit token data for decoding
 
-    llama_batch batch = llama_batch_init(512, 0, 1);
+    llama_batch batch = llama_batch_init(ctx_params.n_ctx, 0, 1);
 
     // evaluate the initial prompt
     for (size_t i = 0; i < tokens_list.size(); i++) {
@@ -115,7 +190,7 @@ int main(int argc, char ** argv) {
 
     const auto t_main_start = ggml_time_us();
 
-    while (n_cur <= n_len) {
+    while (true) {
         // sample the next token
         {
             auto   n_vocab = llama_n_vocab(model);
